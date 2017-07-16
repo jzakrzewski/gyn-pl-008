@@ -188,7 +188,10 @@ func main() {
 
 		queueScanDownload("68eb1a7625837e38d55c54dc99257a17.txt")
 		wg.Wait()
-		dwEnd <- 0
+
+		for i := 0; i < maxParallel; i++ {
+			dwEnd <- 0
+		}
 	}
 
 	if process {
