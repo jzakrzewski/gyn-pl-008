@@ -4,17 +4,20 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"io/ioutil"
+	"math"
 	"net/http"
 	"os"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 )
 
-type position struct {
-	x float32
-	y float32
+type point struct {
+	x float64
+	y float64
 }
 
 const (
@@ -26,8 +29,8 @@ const (
 
 type Scan struct {
 	id   string
-	pos  position
-	dist []float32
+	pos  point
+	dist []float64
 	next []string
 }
 
@@ -90,13 +93,22 @@ func queueScanDownload(id string) {
 	}
 }
 
-func makeFloat32(s string) float32 {
-	f, err := strconv.ParseFloat(s, 32)
+func makeFloat64(s string) float64 {
+	f, err := strconv.ParseFloat(s, 64)
 	if err != nil {
 		panic(err)
 	}
 
-	return float32(f)
+	return f
+}
+
+func parseScanFile(id string) {
+	if s, err := os.Open(path.Join(wd, id)); err == nil {
+		defer s.Close()
+		parseScan(id, s)
+	} else {
+		panic(err)
+	}
 }
 
 func parseScan(id string, r io.Reader) {
@@ -106,14 +118,14 @@ func parseScan(id string, r io.Reader) {
 	s.Scan() // robot coordinates
 	coords := strings.Split(s.Text(), " ")
 
-	x := makeFloat32(coords[0])
-	y := makeFloat32(coords[1])
+	x := makeFloat64(coords[0])
+	y := makeFloat64(coords[1])
 
 	// distance array
-	dist := make([]float32, 36)
+	dist := make([]float64, 36)
 	for i := range dist {
 		s.Scan()
-		dist[i] = makeFloat32(s.Text())
+		dist[i] = makeFloat64(s.Text())
 	}
 
 	links := make([]string, 4)
@@ -136,7 +148,7 @@ func parseScan(id string, r io.Reader) {
 	}
 
 	mux.Lock()
-	scans[id] = Scan{id: id, pos: position{x: x, y: y}, dist: dist, next: links}
+	scans[id] = Scan{id: id, pos: point{x: x, y: y}, dist: dist, next: links}
 	mux.Unlock()
 }
 
@@ -150,6 +162,24 @@ func downloadWorker() {
 		case <-dwEnd:
 			return
 		}
+	}
+}
+
+func addScans(dir string, ch chan string) int {
+	l, err := filepath.Glob(filepath.Join(dir, "*.txt"))
+	if err != nil {
+		panic(err)
+	}
+	for _, f := range l {
+		ch <- filepath.Base(f)
+	}
+	return len(l)
+}
+
+func parserWorker(ch chan string) {
+	for id := range ch {
+		parseScanFile(id)
+		fmt.Print(".")
 	}
 }
 
@@ -194,9 +224,75 @@ func main() {
 		}
 	}
 
-	if process {
+	if process && len(scans) == 0 {
 		fmt.Println("Processing...")
+
+		wg.Add(maxParallel)
+		ch := make(chan string, maxParallel*4)
+		for i := 0; i < maxParallel; i++ {
+			go func() {
+				parserWorker(ch)
+				wg.Done()
+			}()
+		}
+
+		cnt := addScans(wd, ch)
+		close(ch)
+
+		wg.Wait()
+		fmt.Println("\nParsed ", cnt, " scans")
 	}
 
-	fmt.Println("Done ")
+	pts := make([]point, len(scans)*36) // max points
+	if process {
+		rad := float64(math.Pi / 180.0)
+		type sincos struct {
+			sin float64
+			cos float64
+		}
+		sc := make([]sincos, 36)
+		for i := 0; i < 36; i++ {
+			sin, cos := math.Sincos(rad * float64(i*10))
+			sc[i] = sincos{sin, cos}
+		}
+
+		var mx float64 = 0.0
+		var my float64 = 0.0
+
+		factor := 1.0
+		pos := 0
+		for _, s := range scans {
+			for i, d := range s.dist {
+				if !math.IsInf(d, 0) {
+					p := point{
+						x: factor * (s.pos.x + sc[i].sin*d),
+						y: factor * (s.pos.y - sc[i].cos*d),
+					}
+					pts[pos] = p
+					pos++
+					if p.x > mx {
+						mx = p.x
+					}
+					if p.y > my {
+						my = p.y
+					}
+				}
+			}
+		}
+
+		w := int(mx+10)
+		h := int(my+10)
+		fmt.Println("w: ", w, " h: ", h)
+		out := make([]byte, w*h)
+		for _, p := range pts {
+			out[int(int(p.y)*w+int(p.x))] = byte(255)
+		}
+
+		err := ioutil.WriteFile("/tmp/map.data", out, 0644)
+		if err != nil {
+			panic(err)
+		}
+	}
+
+	fmt.Println("Done")
 }
