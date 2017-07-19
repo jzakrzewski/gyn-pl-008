@@ -34,11 +34,11 @@ type Scan struct {
 	next []string
 }
 
-func downloadScan(id string) (err error) {
+func downloadScan(id string, dest string) (err error) {
 
 	fmt.Print("Downloading " + id + "...")
 	// Create the file
-	out, err := os.Create(path.Join(wd, id))
+	out, err := os.Create(path.Join(dest, id))
 	if err != nil {
 		return err
 	}
@@ -102,8 +102,8 @@ func makeFloat64(s string) float64 {
 	return f
 }
 
-func parseScanFile(id string) {
-	if s, err := os.Open(path.Join(wd, id)); err == nil {
+func parseScanFile(id string, dir string) {
+	if s, err := os.Open(path.Join(dir, id)); err == nil {
 		defer s.Close()
 		parseScan(id, s)
 	} else {
@@ -152,11 +152,11 @@ func parseScan(id string, r io.Reader) {
 	mux.Unlock()
 }
 
-func downloadWorker() {
+func downloadWorker(dest string) {
 	for {
 		select {
 		case id := <-dwQueue:
-			if err := downloadScan(id); err != nil {
+			if err := downloadScan(id, dest); err != nil {
 				panic(err)
 			}
 		case <-dwEnd:
@@ -176,9 +176,9 @@ func addScans(dir string, ch chan string) int {
 	return len(l)
 }
 
-func parserWorker(ch chan string) {
+func parserWorker(ch chan string, dir string) {
 	for id := range ch {
-		parseScanFile(id)
+		parseScanFile(id, dir)
 		fmt.Print(".")
 	}
 }
@@ -192,15 +192,13 @@ var wg sync.WaitGroup
 const baseURL = "http://gynvael.coldwind.pl/misja008_drone_io/scans/"
 const maxParallel = 40
 
-var wd string
-
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Println(os.Args[0] + " path [download] [process]")
 		return
 	}
 
-	wd = os.Args[1]
+	wd := os.Args[1]
 
 	cmds := os.Args[2:]
 	dw := len(cmds) > 0 && cmds[0] == "download"
@@ -212,7 +210,7 @@ func main() {
 	if dw {
 		for i := 0; i < maxParallel; i++ {
 			go func() {
-				downloadWorker()
+				downloadWorker(wd)
 			}()
 		}
 
@@ -231,7 +229,7 @@ func main() {
 		ch := make(chan string, maxParallel*4)
 		for i := 0; i < maxParallel; i++ {
 			go func() {
-				parserWorker(ch)
+				parserWorker(ch, wd)
 				wg.Done()
 			}()
 		}
@@ -280,8 +278,8 @@ func main() {
 			}
 		}
 
-		w := int(mx+10)
-		h := int(my+10)
+		w := int(mx + 10)
+		h := int(my + 10)
 		fmt.Println("w: ", w, " h: ", h)
 		out := make([]byte, w*h)
 		for _, p := range pts {
